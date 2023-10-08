@@ -1,0 +1,181 @@
+import pandas as pd
+import pandas_ta as pta
+import yfinance as yf
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.preprocessing import MinMaxScaler
+from technical import *
+
+data = yf.download('SPY', start='2020-01-01', end='2023-06-12')
+
+def ATRVolatilityStrategy_score(data):
+    strategy = ATRVolatilityStrategy(data, ATR_period=14, std_multiplier=1, rolling_window=20)
+
+    full_data = strategy.generate_signals()
+
+    assert isinstance(full_data, pd.DataFrame), "The output should be a pandas DataFrame"
+    assert 'signal_score' in full_data.columns, "DataFrame should have a 'signal' column"
+    assert 'signal_type' in full_data.columns, "DataFrame should have a 'signal_type' column"
+    assert 'explanation' in full_data.columns, "DataFrame should have a 'explanation' column"
+
+    return strategy.get_dataframe()
+
+def BBWVolatilityStrategy_score(data):
+    strategy = BBWVolatilityStrategy(data, BBW_period=20, std_multiplier=1, rolling_window=20)
+
+    full_data = strategy.generate_signals()
+
+    assert isinstance(full_data, pd.DataFrame), "The output should be a pandas DataFrame"
+    assert 'signal_score' in full_data.columns, "DataFrame should have a 'signal' column"
+    assert 'signal_type' in full_data.columns, "DataFrame should have a 'signal_type' column"
+    assert 'explanation' in full_data.columns, "DataFrame should have a 'explanation' column"
+
+    return strategy.get_dataframe()
+
+def ChaikinVolatilityStrategy_score(data):
+    strategy = ChaikinVolatilityStrategy(data, period=14, std_multiplier=1, rolling_window=20)
+
+    full_data = strategy.generate_signals()
+
+    assert isinstance(full_data, pd.DataFrame), "The output should be a pandas DataFrame"
+    assert 'signal_score' in full_data.columns, "DataFrame should have a 'signal' column"
+    assert 'signal_type' in full_data.columns, "DataFrame should have a 'signal_type' column"
+    assert 'explanation' in full_data.columns, "DataFrame should have a 'explanation' column"
+
+    return strategy.get_dataframe()
+
+def GKVolatilityStrategy_score(data):
+    strategy = GKVolatilityStrategy(data, GK_period=14, std_multiplier=1, rolling_window=20)
+
+    full_data = strategy.generate_signals()
+
+    assert isinstance(full_data, pd.DataFrame), "The output should be a pandas DataFrame"
+    assert 'signal_score' in full_data.columns, "DataFrame should have a 'signal' column"
+    assert 'signal_type' in full_data.columns, "DataFrame should have a 'signal_type' column"
+    assert 'explanation' in full_data.columns, "DataFrame should have a 'explanation' column"
+
+    return strategy.get_dataframe()
+
+def RVIVolatilityStrategy_score(data):
+    strategy = RVIVolatilityStrategy(data, RVI_period=14, signal_line_period=9)
+
+    full_data = strategy.generate_signals()
+
+    assert isinstance(full_data, pd.DataFrame), "The output should be a pandas DataFrame"
+    assert 'signal_score' in full_data.columns, "DataFrame should have a 'signal' column"
+    assert 'signal_type' in full_data.columns, "DataFrame should have a 'signal_type' column"
+    assert 'explanation' in full_data.columns, "DataFrame should have a 'explanation' column"
+
+    return strategy.get_dataframe()
+
+class VolatilityEnsemble:
+    def __init__(self, data, strategies):
+        self.data = data.copy()
+        self.strategies = strategies
+
+    def compute_strategy_scores(self):
+        self.strategy_scores = [] # Initialize as an empty list
+
+        # Ensure the index of self.data is unique
+        if not self.data.index.is_unique:
+            self.data = self.data.loc[~self.data.index.duplicated(keep='first')]
+
+        # Loop through each strategy
+        for strategy in self.strategies:
+            strategy_output = strategy(self.data.copy()) # Run the strategy
+
+            # Ensure the index of strategy_output is unique
+            if not strategy_output.index.is_unique:
+                strategy_output = strategy_output.loc[~strategy_output.index.duplicated(keep='first')]
+            
+            # Align the index of strategy_output with self.data
+            strategy_output = strategy_output.reindex(self.data.index)
+            
+            # Append the 'signal_score' series to the list
+            self.strategy_scores.append(strategy_output['signal_score'])
+
+        # Aggregate scores
+        self.aggregate_scores = pd.concat(self.strategy_scores, axis=1).sum(axis=1)
+        
+        # Scaling the scores using MinMaxScaler to a range of -2.5 to 2.5
+        scaler = MinMaxScaler(feature_range=(-2.5, 2.5))
+        self.aggregate_scores = pd.Series(scaler.fit_transform(self.aggregate_scores.values.reshape(-1,1)).flatten(), 
+                                          index=self.aggregate_scores.index)
+        self.aggregate_scores.name = 'aggregate_score'
+
+    def compute_overall_sentiment(self):
+        if not hasattr(self, 'aggregate_scores'):
+            self.compute_strategy_scores()
+        
+        # Adjusting the ranges for each sentiment
+        self.data['Overall Sentiment'] = pd.cut(self.aggregate_scores, 
+                                                bins=[-float('inf'),-2, -0.25, 0.25, 2, float('inf')], 
+                                                labels=['Extremely Low Volatility', 'Low Volatility', 'Neutral', 'High Volatility', 'Extremely High Volatility'])
+
+
+
+    def compute_sentiment_explanation(self):
+        sentiment_explanations = {
+            'Extremely Low Volatility': 'Aggregate score is extremely low, indicating a extremely low trend.',
+            'Low Volatility': 'Aggregate score is slightly low, indicating a potential low trend.',
+            'Neutral': 'Aggregate score is close to neutral, indicating market uncertainty or no clear trend.',
+            'High Volatility': 'Aggregate score is slightly high, indicating a potential high trend.',
+            'Extremely High Volatility': 'Aggregate score is extremely high, indicating a extremely high trend.',
+        }
+
+        self.data['Explanation'] = self.data['Overall Sentiment'].map(sentiment_explanations)
+
+    def run_strategy(self):
+        self.compute_overall_sentiment()
+        self.compute_sentiment_explanation()
+        for date, row in self.data.iterrows():
+            print(f"Date: {date}, Overall Sentiment: {row['Overall Sentiment']}, Explanation: {row['Explanation']}")
+
+
+
+    def plot(self):
+        # Ensure the data contains 'Overall Sentiment'
+        if 'Overall Sentiment' not in self.data.columns:
+            self.compute_overall_sentiment()
+
+        # Create a figure and a set of subplots
+        fig, ax = plt.subplots(figsize=(10, 5))
+
+        # Plot the closing price
+        ax.plot(self.data.index, self.data['Close'], label='Price', color='blue')
+
+        # Marker styles for different sentiments
+        marker_styles = {
+            'Extremely High Volatility': ('^', 'green'),
+            'High Volatility': ('^', 'lime'),
+            'Extremely Low Volatility': ('v', 'red'),
+            'Low Volatility': ('v', 'darkorange'),
+            'Neutral': ('o', 'gray')
+        }
+
+        # Add the sentiment as markers
+        for date, row in self.data.iterrows():
+            sentiment = row['Overall Sentiment']
+            if sentiment in marker_styles:
+                marker, color = marker_styles[sentiment]
+                ax.plot(date, row['Close'], marker=marker, markersize=8, color=color, label=sentiment if sentiment not in [l.get_label() for l in ax.lines] else "")
+
+        # Add labels and title
+        plt.xlabel('Date')
+        plt.ylabel('Price')
+        plt.title('Price and Overall Sentiment')
+        ax.legend(loc='upper left', bbox_to_anchor=(1, 1))
+
+        # Show the plot
+        plt.tight_layout()
+        plt.show()
+
+strategies = [
+    lambda data: ATRVolatilityStrategy_score(data), lambda data: BBWVolatilityStrategy_score(data), lambda data: ChaikinVolatilityStrategy_score(data), lambda data: GKVolatilityStrategy_score(data),
+    lambda data: RVIVolatilityStrategy_score(data)
+]
+
+ensemble = VolatilityEnsemble(data, strategies)
+ensemble.run_strategy()
+ensemble.plot()
+
